@@ -1,0 +1,67 @@
+:root {
+  --bg: #0b1020;
+  --panel: #11182a;
+  --panel2: #161f34;
+  --line: #2b3552;
+  --line2: #202943;
+  --text: #e8ecf5;
+  --muted: #95a0ba;
+  --accent: #7c9cff;
+  --accent2: #a78bfa;
+  --danger: #ff6b7a;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: Inter, Pretendard, system-ui, -apple-system, Segoe UI, sans-serif; }
+button, input, select, textarea { font: inherit; }
+button { color: var(--text); background: #1b2540; border: 1px solid #34405e; border-radius: 10px; padding: 8px 12px; cursor: pointer; }
+button:hover { background: #253252; }
+button.primary { background: linear-gradient(135deg, #6d8eff, #8b76ff); border: none; }
+button.danger { background: rgba(255,107,122,.12); border-color: rgba(255,107,122,.5); color: #ff9aa5; }
+button.full { width: 100%; }
+input, select, textarea { color: var(--text); background: #0f1628; border: 1px solid #34405e; border-radius: 8px; padding: 7px 8px; }
+textarea { resize: vertical; width: 100%; }
+
+.app-shell { height: 100%; display: flex; flex-direction: column; }
+.topbar { height: 72px; flex: 0 0 auto; padding: 10px 16px; display: flex; align-items: center; gap: 18px; border-bottom: 1px solid var(--line); background: rgba(11,16,32,.96); }
+.brand { display: flex; align-items: center; gap: 10px; min-width: 210px; }
+.brand-mark { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 11px; font-weight: 900; font-size: 20px; background: linear-gradient(135deg, var(--accent), var(--accent2)); }
+.brand-title { font-size: 18px; font-weight: 800; }
+.brand-sub { font-size: 11px; color: var(--muted); }
+.transport { display: flex; align-items: center; gap: 8px; flex: 1; }
+.transport label { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 12px; }
+.transport input { width: 70px; }
+.top-actions { display: flex; gap: 8px; }
+.file-btn { display: inline-flex; align-items: center; color: var(--text); background: #1b2540; border: 1px solid #34405e; border-radius: 10px; padding: 8px 12px; cursor: pointer; }
+.file-btn input { display: none; }
+
+.workspace { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 310px; }
+.editor-panel { min-width: 0; display: flex; flex-direction: column; }
+.hintbar { height: 34px; display: flex; gap: 20px; align-items: center; padding: 0 14px; color: #8994af; border-bottom: 1px solid var(--line2); font-size: 11px; }
+.timeline-wrap { flex: 1; min-height: 0; overflow: auto; background: #090e1b; }
+#timeline { display: block; }
+
+.inspector { overflow-y: auto; border-left: 1px solid var(--line); background: #10172a; padding: 16px; }
+.inspector h2 { margin: 0 0 12px; font-size: 14px; }
+.inspector hr { border: 0; border-top: 1px solid var(--line); margin: 18px 0; }
+.empty-state { color: var(--muted); font-size: 13px; padding: 18px 8px; text-align: center; border: 1px dashed #33405e; border-radius: 10px; }
+.hidden { display: none; }
+.inspector-form { display: grid; gap: 12px; }
+.inspector-form label { font-size: 12px; color: var(--muted); display: grid; gap: 6px; }
+.metric-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.metric-grid div { background: #0d1425; border: 1px solid #27324d; border-radius: 9px; padding: 8px; }
+.metric-grid small { display: block; color: #7e8aa4; margin-bottom: 3px; }
+.metric-grid strong { font-size: 13px; }
+.track-list { display: grid; gap: 8px; margin-bottom: 10px; }
+.track-item { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; background: #0d1425; border: 1px solid #28334f; border-radius: 10px; padding: 8px; }
+.track-item .name { font-size: 13px; font-weight: 700; }
+.track-item .type { color: var(--muted); font-size: 10px; }
+.track-item button { padding: 5px 8px; font-size: 11px; }
+.help-copy { color: var(--muted); line-height: 1.6; font-size: 12px; margin: 0; }
+
+@media (max-width: 1000px) {
+  .topbar { height: auto; flex-wrap: wrap; }
+  .brand { min-width: 160px; }
+  .workspace { grid-template-columns: 1fr; }
+  .inspector { border-left: 0; border-top: 1px solid var(--line); max-height: 42vh; }
+}
