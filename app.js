@@ -39,6 +39,9 @@
   const PITCH_ROWS = 24;
   const HANDLE = 8;
 
+  const MAJOR_SCALE = [0, 2, 4, 5, 7, 9, 11];
+  const PENTATONIC_SCALE = [0, 2, 4, 7, 9];
+
   let tracks = [
     { id: crypto.randomUUID(), name: 'Piano', type: 'piano', color: COLORS[0] },
     { id: crypto.randomUUID(), name: 'Guitar', type: 'guitar', color: COLORS[1] },
@@ -60,6 +63,7 @@
   let rafId = null;
   let startedAt = 0;
   let audioCtx = null;
+  let masterBus = null;
   let scheduledNodes = [];
 
   function selectedBlock() { return blocks.find(b => b.id === selectedId) || null; }
@@ -103,7 +107,6 @@
     ctx.fillStyle = '#090e1b';
     ctx.fillRect(0, 0, w, h);
 
-    // top ruler
     ctx.fillStyle = '#0c1324';
     ctx.fillRect(0, 0, w, TOP);
     ctx.strokeStyle = '#27314b';
@@ -143,8 +146,8 @@
       const rowH = TRACK_H / PITCH_ROWS;
       for (let r = 1; r < PITCH_ROWS; r++) {
         const yy = y + r * rowH;
-        ctx.strokeStyle = r % 12 === 0 ? '#29334e' : '#151d31';
-        ctx.lineWidth = r % 12 === 0 ? 1.2 : 1;
+        ctx.strokeStyle = r % 7 === 0 ? '#29334e' : '#151d31';
+        ctx.lineWidth = r % 7 === 0 ? 1.2 : 1;
         ctx.beginPath(); ctx.moveTo(LABEL_W, yy+.5); ctx.lineTo(w, yy+.5); ctx.stroke();
       }
     });
@@ -181,7 +184,6 @@
     const hovered = b.id === hoverId;
     const mode = UI.viewMode.value;
 
-    // note cells
     if (mode === 'notes' || mode === 'both') {
       const grid = rasterBlock(b);
       const cellW = bw / grid.cols;
@@ -371,6 +373,16 @@
     return {cols,rows,cells};
   }
 
+  function scaleMidi(type, visualRow, octave = 0) {
+    const isBass = type === 'bass';
+    const scale = isBass ? PENTATONIC_SCALE : MAJOR_SCALE;
+    const base = isBass ? 36 : type === 'guitar' ? 40 : 48;
+    const degree = Math.max(0, Math.round(visualRow));
+    const oct = Math.floor(degree / scale.length);
+    const index = degree % scale.length;
+    return base + scale[index] + oct * 12 + octave * 12;
+  }
+
   function blockEvents(b) {
     const grid = rasterBlock(b);
     const t = tracks[b.track];
@@ -380,27 +392,30 @@
       if (!byCol.has(cell.c)) byCol.set(cell.c, []);
       byCol.get(cell.c).push(cell.r);
     });
+
     for (const [c, rows] of byCol.entries()) {
-      // cap polyphony per column for performance
       const uniq = [...new Set(rows)].sort((a,b)=>a-b);
-      const maxNotes = t.type==='drums' ? 3 : 5;
+      const maxNotes = t.type==='drums' ? 2 : t.type==='bass' ? 2 : t.type==='guitar' ? 3 : 4;
       const chosen=[];
       if (uniq.length <= maxNotes) chosen.push(...uniq);
       else {
         for (let i=0;i<maxNotes;i++) chosen.push(uniq[Math.round(i*(uniq.length-1)/(maxNotes-1))]);
       }
+
+      const usedMidi = new Set();
       for (const r of chosen) {
         const beat = b.x + (c/grid.cols)*b.w;
         const dur = Math.max(.08, (b.w/grid.cols) * .9);
         if (t.type==='drums') {
           const zone = r/grid.rows;
-          const drum = zone>.68 ? 'kick' : zone>.36 ? 'snare' : zone>.16 ? 'hat' : 'clap';
+          const drum = zone>.68 ? 'kick' : zone>.38 ? 'snare' : zone>.17 ? 'hat' : 'clap';
           events.push({beat,dur,track:b.track,drum,vel:b.velocity});
         } else {
           const normalizedY = b.y + (r/grid.rows)*b.h;
-          const row = Math.round((1-normalizedY)*(PITCH_ROWS-1));
-          const base = t.type==='bass' ? 36 : t.type==='guitar' ? 48 : 48;
-          const midi = base + row + b.octave*12;
+          const visualRow = Math.round((1-normalizedY)*(PITCH_ROWS-1));
+          const midi = scaleMidi(t.type, visualRow, b.octave);
+          if (usedMidi.has(midi)) continue;
+          usedMidi.add(midi);
           events.push({beat,dur,track:b.track,midi,vel:b.velocity});
         }
       }
@@ -411,69 +426,226 @@
   function allEvents() { return blocks.flatMap(blockEvents).sort((a,b)=>a.beat-b.beat); }
 
   function getAudio() {
-    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+      const input = audioCtx.createGain();
+      const compressor = audioCtx.createDynamicsCompressor();
+      const output = audioCtx.createGain();
+
+      input.gain.value = 0.82;
+      compressor.threshold.value = -18;
+      compressor.knee.value = 18;
+      compressor.ratio.value = 4;
+      compressor.attack.value = 0.003;
+      compressor.release.value = 0.16;
+      output.gain.value = 0.9;
+
+      input.connect(compressor);
+      compressor.connect(output);
+      output.connect(audioCtx.destination);
+      masterBus = input;
+    }
     return audioCtx;
   }
 
+  function destination() {
+    getAudio();
+    return masterBus;
+  }
+
   function midiFreq(m) { return 440 * Math.pow(2,(m-69)/12); }
-  function connectEnv(osc, gain, when, dur, vel, shape='soft') {
-    gain.gain.setValueAtTime(0.0001, when);
-    gain.gain.exponentialRampToValueAtTime(Math.max(.01, vel*.18), when + .008);
-    const decay = shape==='pluck' ? Math.min(dur,.28) : Math.min(dur,.55);
-    gain.gain.exponentialRampToValueAtTime(.0001, when + decay);
-    osc.connect(gain); gain.connect(getAudio().destination);
-    osc.start(when); osc.stop(when+decay+.03); scheduledNodes.push(osc);
+
+  function safeExp(param, value, time) {
+    param.exponentialRampToValueAtTime(Math.max(0.0001, value), time);
+  }
+
+  function scheduleOsc(osc, when, stopAt) {
+    osc.start(when);
+    osc.stop(stopAt);
+    scheduledNodes.push(osc);
+  }
+
+  function createNoiseBuffer(duration=.2) {
+    const ac=getAudio();
+    const len=Math.max(1, Math.floor(ac.sampleRate*duration));
+    const b=ac.createBuffer(1,len,ac.sampleRate);
+    const data=b.getChannelData(0);
+    for (let i=0;i<len;i++) data[i]=(Math.random()*2-1) * (1-i/len*.18);
+    return b;
+  }
+
+  function playPiano(freq, when, dur, vel) {
+    const ac=getAudio();
+    const filter=ac.createBiquadFilter();
+    const out=ac.createGain();
+    filter.type='lowpass';
+    filter.frequency.setValueAtTime(Math.min(7600, Math.max(1800, freq*11)), when);
+    filter.Q.value=.55;
+    out.gain.setValueAtTime(.0001,when);
+    out.gain.linearRampToValueAtTime(.18*vel,when+.006);
+    safeExp(out.gain,.075*vel,when+.11);
+    safeExp(out.gain,.0001,when+Math.max(.32,Math.min(1.8,dur+1.0)));
+    filter.connect(out); out.connect(destination());
+
+    const partials=[
+      [1, 'triangle', 1, 0],
+      [2, 'sine', .30, 1.5],
+      [3, 'sine', .12, -2],
+      [4, 'sine', .055, 3]
+    ];
+    const stopAt=when+Math.max(.38,Math.min(1.9,dur+1.08));
+    for (const [mul,type,level,detune] of partials) {
+      const o=ac.createOscillator(), g=ac.createGain();
+      o.type=type; o.frequency.value=freq*mul; o.detune.value=detune;
+      g.gain.value=level;
+      o.connect(g); g.connect(filter);
+      scheduleOsc(o,when,stopAt);
+    }
+
+    const hammer=ac.createBufferSource(), hg=ac.createGain(), hp=ac.createBiquadFilter();
+    hammer.buffer=createNoiseBuffer(.025);
+    hp.type='highpass'; hp.frequency.value=1800;
+    hg.gain.setValueAtTime(.022*vel,when);
+    safeExp(hg.gain,.0001,when+.022);
+    hammer.connect(hp); hp.connect(hg); hg.connect(out);
+    hammer.start(when); scheduledNodes.push(hammer);
+  }
+
+  function playGuitar(freq, when, dur, vel) {
+    const ac=getAudio();
+    const filter=ac.createBiquadFilter();
+    const out=ac.createGain();
+    filter.type='lowpass'; filter.Q.value=1.15;
+    filter.frequency.setValueAtTime(Math.min(5200, Math.max(1500, freq*9)),when);
+    safeExp(filter.frequency,Math.max(650,freq*2.4),when+.34);
+    out.gain.setValueAtTime(.0001,when);
+    out.gain.linearRampToValueAtTime(.11*vel,when+.004);
+    safeExp(out.gain,.055*vel,when+.08);
+    safeExp(out.gain,.0001,when+Math.max(.22,Math.min(1.2,dur+.48)));
+    filter.connect(out); out.connect(destination());
+
+    const stopAt=when+Math.max(.26,Math.min(1.28,dur+.55));
+    const o1=ac.createOscillator(), g1=ac.createGain();
+    o1.type='sawtooth'; o1.frequency.value=freq; o1.detune.value=-2;
+    g1.gain.value=.62; o1.connect(g1); g1.connect(filter); scheduleOsc(o1,when,stopAt);
+    const o2=ac.createOscillator(), g2=ac.createGain();
+    o2.type='triangle'; o2.frequency.value=freq*2; o2.detune.value=2;
+    g2.gain.value=.22; o2.connect(g2); g2.connect(filter); scheduleOsc(o2,when,stopAt);
+
+    const pick=ac.createBufferSource(), pg=ac.createGain(), php=ac.createBiquadFilter();
+    pick.buffer=createNoiseBuffer(.018);
+    php.type='bandpass'; php.frequency.value=2800; php.Q.value=.8;
+    pg.gain.setValueAtTime(.035*vel,when); safeExp(pg.gain,.0001,when+.018);
+    pick.connect(php); php.connect(pg); pg.connect(out); pick.start(when); scheduledNodes.push(pick);
+  }
+
+  function playBass(freq, when, dur, vel) {
+    const ac=getAudio();
+    const filter=ac.createBiquadFilter();
+    const out=ac.createGain();
+    filter.type='lowpass'; filter.Q.value=.75;
+    filter.frequency.setValueAtTime(Math.max(700,freq*7),when);
+    safeExp(filter.frequency,Math.max(260,freq*2.2),when+.2);
+    out.gain.setValueAtTime(.0001,when);
+    out.gain.linearRampToValueAtTime(.15*vel,when+.008);
+    safeExp(out.gain,.095*vel,when+.09);
+    safeExp(out.gain,.0001,when+Math.max(.26,Math.min(1.0,dur+.38)));
+    filter.connect(out); out.connect(destination());
+
+    const stopAt=when+Math.max(.3,Math.min(1.05,dur+.42));
+    const o1=ac.createOscillator(), g1=ac.createGain();
+    o1.type='sine'; o1.frequency.value=freq; g1.gain.value=1;
+    o1.connect(g1); g1.connect(filter); scheduleOsc(o1,when,stopAt);
+    const o2=ac.createOscillator(), g2=ac.createGain();
+    o2.type='triangle'; o2.frequency.value=freq*2; g2.gain.value=.18;
+    o2.connect(g2); g2.connect(filter); scheduleOsc(o2,when,stopAt);
+  }
+
+  function playSynth(freq, when, dur, vel) {
+    const ac=getAudio();
+    const filter=ac.createBiquadFilter();
+    const out=ac.createGain();
+    filter.type='lowpass'; filter.Q.value=2.2;
+    filter.frequency.setValueAtTime(Math.min(4800,Math.max(1200,freq*8)),when);
+    safeExp(filter.frequency,Math.max(550,freq*2),when+.28);
+    out.gain.setValueAtTime(.0001,when);
+    out.gain.linearRampToValueAtTime(.08*vel,when+.02);
+    safeExp(out.gain,.0001,when+Math.max(.2,Math.min(1.2,dur+.28)));
+    filter.connect(out); out.connect(destination());
+    const stopAt=when+Math.max(.24,Math.min(1.24,dur+.32));
+    [-7,7].forEach(detune=>{
+      const o=ac.createOscillator(); o.type='sawtooth'; o.frequency.value=freq; o.detune.value=detune;
+      o.connect(filter); scheduleOsc(o,when,stopAt);
+    });
   }
 
   function playTone(event, when, secPerBeat) {
-    const ac = getAudio(); const type = tracks[event.track]?.type || 'piano';
+    const type = tracks[event.track]?.type || 'piano';
     if (event.drum) return playDrum(event.drum, when, event.vel);
-    const dur = Math.max(.05, event.dur * secPerBeat);
+    const dur = Math.max(.055, event.dur * secPerBeat);
     const freq = midiFreq(event.midi);
-    if (type === 'piano') {
-      [1,2].forEach((harm,i)=>{
-        const o=ac.createOscillator(), g=ac.createGain(); o.type=i?'sine':'triangle'; o.frequency.value=freq*harm;
-        connectEnv(o,g,when,dur,event.vel*(i?0.3:1),'pluck');
-      });
-    } else if (type === 'guitar') {
-      const o=ac.createOscillator(), g=ac.createGain(); o.type='sawtooth'; o.frequency.value=freq;
-      connectEnv(o,g,when,dur,event.vel*.75,'pluck');
-    } else if (type === 'bass') {
-      const o=ac.createOscillator(), g=ac.createGain(); o.type='square'; o.frequency.value=freq;
-      connectEnv(o,g,when,dur,event.vel*.55,'soft');
-    } else {
-      const o=ac.createOscillator(), g=ac.createGain(); o.type='sine'; o.frequency.value=freq;
-      connectEnv(o,g,when,dur,event.vel,'soft');
-    }
+    if (type==='piano') playPiano(freq,when,dur,event.vel);
+    else if (type==='guitar') playGuitar(freq,when,dur,event.vel);
+    else if (type==='bass') playBass(freq,when,dur,event.vel);
+    else playSynth(freq,when,dur,event.vel);
   }
 
-  function noiseBuffer(duration=.15) {
-    const ac=getAudio(); const len=Math.floor(ac.sampleRate*duration); const b=ac.createBuffer(1,len,ac.sampleRate); const data=b.getChannelData(0);
-    for (let i=0;i<len;i++) data[i]=Math.random()*2-1; return b;
+  function playKick(when,vel) {
+    const ac=getAudio(), o=ac.createOscillator(), g=ac.createGain();
+    o.type='sine';
+    o.frequency.setValueAtTime(155,when); safeExp(o.frequency,47,when+.12);
+    g.gain.setValueAtTime(.34*vel,when); safeExp(g.gain,.0001,when+.19);
+    o.connect(g); g.connect(destination()); scheduleOsc(o,when,when+.2);
+  }
+
+  function playSnare(when,vel) {
+    const ac=getAudio();
+    const s=ac.createBufferSource(), ng=ac.createGain(), bp=ac.createBiquadFilter();
+    s.buffer=createNoiseBuffer(.22); bp.type='bandpass'; bp.frequency.value=1800; bp.Q.value=.65;
+    ng.gain.setValueAtTime(.19*vel,when); safeExp(ng.gain,.0001,when+.18);
+    s.connect(bp); bp.connect(ng); ng.connect(destination()); s.start(when); scheduledNodes.push(s);
+
+    const o=ac.createOscillator(), g=ac.createGain(); o.type='triangle'; o.frequency.value=185;
+    g.gain.setValueAtTime(.10*vel,when); safeExp(g.gain,.0001,when+.11);
+    o.connect(g); g.connect(destination()); scheduleOsc(o,when,when+.12);
+  }
+
+  function playHat(when,vel) {
+    const ac=getAudio();
+    const s=ac.createBufferSource(), g=ac.createGain(), hp=ac.createBiquadFilter();
+    s.buffer=createNoiseBuffer(.07); hp.type='highpass'; hp.frequency.value=6200; hp.Q.value=.8;
+    g.gain.setValueAtTime(.075*vel,when); safeExp(g.gain,.0001,when+.065);
+    s.connect(hp); hp.connect(g); g.connect(destination()); s.start(when); scheduledNodes.push(s);
+  }
+
+  function playClap(when,vel) {
+    const ac=getAudio();
+    [0,.018,.036].forEach((offset,i)=>{
+      const s=ac.createBufferSource(), g=ac.createGain(), bp=ac.createBiquadFilter();
+      s.buffer=createNoiseBuffer(.07); bp.type='bandpass'; bp.frequency.value=1350; bp.Q.value=.55;
+      const t=when+offset;
+      g.gain.setValueAtTime((i===0?.10:.07)*vel,t); safeExp(g.gain,.0001,t+.06);
+      s.connect(bp); bp.connect(g); g.connect(destination()); s.start(t); scheduledNodes.push(s);
+    });
   }
 
   function playDrum(kind, when, vel) {
-    const ac=getAudio();
-    if (kind==='kick') {
-      const o=ac.createOscillator(), g=ac.createGain(); o.type='sine';
-      o.frequency.setValueAtTime(130,when); o.frequency.exponentialRampToValueAtTime(45,when+.12);
-      g.gain.setValueAtTime(.35*vel,when); g.gain.exponentialRampToValueAtTime(.0001,when+.16);
-      o.connect(g); g.connect(ac.destination); o.start(when); o.stop(when+.17); scheduledNodes.push(o);
-    } else {
-      const s=ac.createBufferSource(), g=ac.createGain(), f=ac.createBiquadFilter(); s.buffer=noiseBuffer(kind==='hat'?.06:.16);
-      f.type='highpass'; f.frequency.value=kind==='hat'?5000:1200;
-      g.gain.setValueAtTime((kind==='hat'?.12:.2)*vel,when); g.gain.exponentialRampToValueAtTime(.0001,when+(kind==='hat'?.07:.16));
-      s.connect(f); f.connect(g); g.connect(ac.destination); s.start(when); scheduledNodes.push(s);
-    }
+    if (kind==='kick') playKick(when,vel);
+    else if (kind==='snare') playSnare(when,vel);
+    else if (kind==='hat') playHat(when,vel);
+    else playClap(when,vel);
   }
 
   async function startPlayback() {
     stopPlayback();
     const ac=getAudio(); await ac.resume();
     const bpm=clamp(parseFloat(UI.bpmInput.value)||120,40,240); UI.bpmInput.value=bpm;
-    const spb=60/bpm; const startBeat=playheadBeat >= TOTAL_BEATS-.01 ? 0 : playheadBeat;
+    const spb=60/bpm;
+    const startBeat=playheadBeat >= TOTAL_BEATS-.01 ? 0 : playheadBeat;
     playheadBeat=startBeat; isPlaying=true;
-    const now=ac.currentTime+.05; startedAt=performance.now()-startBeat*spb*1000;
+    const now=ac.currentTime+.05;
+    startedAt=performance.now()-startBeat*spb*1000;
     const events=allEvents().filter(e=>e.beat>=startBeat);
     for (const ev of events) {
       const when=now+(ev.beat-startBeat)*spb;
@@ -491,7 +663,8 @@
   function stopPlayback() {
     isPlaying=false;
     if (rafId) cancelAnimationFrame(rafId);
-    scheduledNodes.forEach(n=>{ try{n.stop();}catch{} }); scheduledNodes=[];
+    scheduledNodes.forEach(n=>{ try{n.stop();}catch{} });
+    scheduledNodes=[];
     draw();
   }
 
@@ -518,12 +691,13 @@
     UI.startMetric.textContent=b.x.toFixed(2)+' beat';
     UI.lengthMetric.textContent=b.w.toFixed(2)+' beat';
     const t=tracks[b.track];
-    if (t?.type==='drums') { UI.lowMetric.textContent='Kick'; UI.highMetric.textContent='Clap'; }
-    else {
-      const base=t?.type==='bass'?36:48;
-      const low=base+Math.round((1-(b.y+b.h))*(PITCH_ROWS-1))+b.octave*12;
-      const high=base+Math.round((1-b.y)*(PITCH_ROWS-1))+b.octave*12;
-      UI.lowMetric.textContent=noteName(low); UI.highMetric.textContent=noteName(high);
+    if (t?.type==='drums') {
+      UI.lowMetric.textContent='Kick'; UI.highMetric.textContent='Clap';
+    } else {
+      const lowVisual=Math.round((1-(b.y+b.h))*(PITCH_ROWS-1));
+      const highVisual=Math.round((1-b.y)*(PITCH_ROWS-1));
+      UI.lowMetric.textContent=noteName(scaleMidi(t?.type||'piano',lowVisual,b.octave));
+      UI.highMetric.textContent=noteName(scaleMidi(t?.type||'piano',highVisual,b.octave));
     }
   }
 
@@ -548,7 +722,7 @@
     tracks.splice(i,1); selectedId=null; rebuildTrackUI();
   }
 
-  function escapeHtml(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+  function escapeHtml(s){ return String(s).replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c])); }
   function hexToRgba(hex,a){ const h=hex.replace('#',''); const n=parseInt(h,16); return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`; }
 
   UI.playBtn.addEventListener('click',startPlayback);
@@ -573,7 +747,7 @@
   });
 
   UI.saveBtn.addEventListener('click',()=>{
-    const data={version:'0.1',bpm:+UI.bpmInput.value,tracks,blocks};
+    const data={version:'0.2',bpm:+UI.bpmInput.value,tracks,blocks};
     const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
     const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='project.textroll'; a.click(); URL.revokeObjectURL(a.href);
   });
